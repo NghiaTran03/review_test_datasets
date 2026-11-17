@@ -1,5 +1,7 @@
 """VacxiS reviewer and administrator web routes."""
 
+from base64 import urlsafe_b64encode
+import hmac
 import json
 import os
 import re
@@ -21,6 +23,35 @@ from store import (
     BASE_DIR, SCOPES, ReviewConflict, ReviewError, accept_invite, connect, database_location, invite, issue_link,
     release_unstarted, reopen, reserve_operation, save_review, timestamp, update_profile,
 )
+
+
+INVITE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+INVITE_TOKEN = re.compile(r"[A-Za-z0-9_-]{43}")
+INVITE_CODE = re.compile(rf"[{INVITE_ALPHABET}]{{12}}")
+INVITE_ALIASES = str.maketrans({"O": "0", "I": "1", "L": "1"})
+
+
+def token_for_code(code, key):
+    signed = hmac.digest(key, f"vacxis-invite-code-v1:{code}".encode(), "sha256")
+    return urlsafe_b64encode(signed).decode().rstrip("=")
+
+
+def new_invitation(key):
+    code = "".join(secrets.choice(INVITE_ALPHABET) for _ in range(12))
+    return "-".join((code[:4], code[4:8], code[8:])), token_for_code(code, key)
+
+
+def invitation_token(credential, key):
+    if not isinstance(credential, str) or len(credential) > 2048:
+        return None
+    value = credential.strip()
+    token = value.rsplit("#", 1)[-1]
+    if INVITE_TOKEN.fullmatch(token):
+        return token
+    code = re.sub(r"[-\s]", "", value).upper().translate(INVITE_ALIASES)
+    if INVITE_CODE.fullmatch(code):
+        return token_for_code(code, key)
+    return None
 
 
 def redirect(path):
@@ -123,6 +154,7 @@ def create_app(location=None):
         raise RuntimeError("Set distinct REVIEW_SECRET_KEY and REVIEW_ADMIN_PASSWORD values.")
 
     secret = secret or secrets.token_urlsafe(48)
+    invitation_key = secret.encode()
     consent_signer = URLSafeSerializer(secret, salt="vacxis-consent-v1")
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(SessionMiddleware, secret_key=secret,
@@ -178,20 +210,22 @@ def create_app(location=None):
 
     @app.post("/join")
     def join(request: Request, form: PostForm):
-        token = str(form.get("token", "")).strip().rsplit("#", 1)[-1]
+        token = invitation_token(form.get("token"), invitation_key)
         person = None
-        if re.fullmatch(r"[A-Za-z0-9_-]{43}", token):
+        if token:
             with connect(location, write=True) as db:
                 person = accept_invite(db, token)
         if not person:
             return page(request, "welcome", joining=True, code=400,
-                        error="Lời mời không hợp lệ, đã hết hạn hoặc đã được dùng. Hãy liên hệ nhóm đồ án.")
+                        error="Hãy kiểm tra mã hoặc liên kết. Nếu lời mời đã dùng hoặc hết hạn, hãy xin nhóm đồ án cấp lại.")
         request.session.clear()
         request.session.update(reviewer_id=person["id"], access_version=person["access_version"])
         return redirect("/review")
 
     @app.get("/admin/login")
     def admin_login_page(request: Request):
+        if is_admin(request):
+            return redirect("/admin")
         return page(request, "welcome", login=True)
 
     @app.post("/admin/login")
@@ -363,7 +397,7 @@ def create_app(location=None):
         request.session["message"] = "Đã gửi đề xuất cho nhóm đồ án."
         return redirect("/review")
 
-    def admin_page(request, scope, *, status="", token=None, error=None):
+    def admin_page(request, scope, *, status="", invitation=None, error=None):
         with connect(location) as db:
             rows = db.all(
                 "SELECT r.question_id, r.status, r.revision, r.reviewer_id, r.verified_at, q.query, "
@@ -375,12 +409,14 @@ def create_app(location=None):
                 "AND EXISTS (SELECT 1 FROM review_items r WHERE r.reviewer_id = u.id) ORDER BY u.id", (scope,),
             )
             referrals = db.all("SELECT * FROM referrals WHERE handled_at IS NULL ORDER BY created_at") if scope == "live" else []
+        code, token = invitation or (None, None)
         return page(request, "admin", scope=scope, total=len(rows), people=people, referrals=referrals,
                     available=sum(not row["reviewer_id"] for row in rows),
                     done=sum(row["status"] == "verified" for row in rows), status=status,
                     rows=[row for row in rows if not status or row["status"] == status],
                     invite_operation=secrets.token_hex(16), reviewer_operation=secrets.token_hex(16),
-                    invite_url=f"{public_url}/join#{token}" if token else None, error=error, code=422 if error else 200,
+                    invite_url=f"{public_url}/join#{token}" if token else None, invite_code=code,
+                    public_url=public_url, error=error, code=422 if error else 200,
                     message=request.session.pop("message", ""))
 
     @app.get("/admin")
@@ -400,17 +436,18 @@ def create_app(location=None):
             with connect(location, write=True) as db:
                 reserve_operation(db, form.get("operation"))
                 count = integer(form.get("count"), "Nhập số câu cần phân công.")
-                token = invite(db, scope, count, form.get("can_refer") == "yes", form.get("referral_id") or None)
+                code, token = new_invitation(invitation_key)
+                invite(db, scope, count, form.get("can_refer") == "yes", form.get("referral_id") or None, token=token)
         except ReviewError as error:
             return admin_page(request, scope, error=str(error))
-        return admin_page(request, scope, token=token)
+        return admin_page(request, scope, invitation=(code, token))
 
     @app.post("/admin/reissue")
     @app.post("/admin/release")
     def manage_assignments(request: Request, form: PostForm):
         require_admin(request)
         reviewer_id = form.get("reviewer_id", "")
-        token = None
+        invitation = None
         try:
             with connect(location, write=True) as db:
                 person = db.locked("SELECT scope FROM reviewers WHERE id = ?", (reviewer_id,))
@@ -423,10 +460,12 @@ def create_app(location=None):
                 else:
                     if not db.one("SELECT question_id FROM review_items WHERE reviewer_id = ? LIMIT 1", (reviewer_id,)):
                         raise ReviewError("Người duyệt này không còn câu được giao.")
-                    token = issue_link(db, reviewer_id)
+                    code, token = new_invitation(invitation_key)
+                    issue_link(db, reviewer_id, token=token)
+                    invitation = (code, token)
         except ReviewError as error:
             return admin_page(request, person["scope"], error=str(error))
-        return admin_page(request, person["scope"], token=token)
+        return admin_page(request, person["scope"], invitation=invitation)
 
     @app.get("/admin/history/{scope}/{identifier}")
     def history(request: Request, scope: str, identifier: str):

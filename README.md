@@ -20,7 +20,7 @@ uv run --env-file .env store.py ../test_dataset.json
 uv run --env-file .env uvicorn app:app --host 127.0.0.1 --port 8000
 ```
 
-Mở [trang nhóm đồ án](http://127.0.0.1:8000/admin/login), nhập mật khẩu trong `.env`, rồi chọn **Thử nghiệm nội bộ** để tạo lời mời thử. Mở lời mời bằng một cửa sổ riêng để giữ phiên quản trị đang dùng. Bí mật và SQLite cục bộ nằm trong các đường dẫn đã được Git bỏ qua.
+Mở [trang chủ](http://127.0.0.1:8000), bấm **Đăng nhập quản trị** và nhập mật khẩu trong `.env`. Chọn **Thử nghiệm nội bộ** để tạo lời mời thử. Mở lời mời trong hồ sơ trình duyệt khác hoặc cửa sổ riêng tư để giữ phiên quản trị đang dùng. Bí mật và SQLite cục bộ nằm trong các đường dẫn đã được Git bỏ qua.
 
 ## Deploy lên Vercel
 
@@ -37,7 +37,9 @@ Mở [trang nhóm đồ án](http://127.0.0.1:8000/admin/login), nhập mật kh
 
 ## Vận hành đợt duyệt
 
-- Tạo một liên kết cho mỗi người, chọn số câu cần giao và gửi liên kết riêng. Liên kết có hạn 7 ngày và dùng một lần. Để tiếp tục, người duyệt mở lại trang bằng cùng trình duyệt. Nhóm có thể cấp liên kết mới nếu người duyệt đổi trình duyệt hoặc phiên hết hạn.
+- Tạo một lời mời cho mỗi người và chọn số câu cần giao. Bấm **Sao chép lời mời** để lấy tin nhắn có sẵn cả liên kết và mã 12 ký tự. Gửi riêng cho từng người.
+- Người duyệt có thể mở liên kết và bấm **Vào trang duyệt**, hoặc nhập mã ngay ở trang chủ. Mã chấp nhận chữ thường và có thể bỏ dấu gạch. Hai cách dùng chung một lời mời, có hạn 7 ngày và dùng một lần.
+- Để tiếp tục, người duyệt mở lại trang bằng cùng trình duyệt. Nhóm có thể cấp lời mời mới nếu người duyệt đổi trình duyệt hoặc phiên hết hạn. Giữ `REVIEW_SECRET_KEY` ổn định qua các lần deploy để mã đã cấp tiếp tục hoạt động trong thời hạn của chúng.
 - Người duyệt thật có thể bỏ qua biểu mẫu thông tin cá nhân và vẫn xác nhận câu trả lời. Họ có thể xem, sửa hoặc xóa các trường đã chia sẻ tại **Bảo vệ thông tin cá nhân**. Liên kết dành cho nhóm thử nghiệm luôn bỏ qua biểu mẫu.
 - Nhóm quản lý có thể xem lịch sử, mở lại câu đã xác nhận hoặc cần xem lại, và thu hồi các câu chưa bắt đầu để giao cho người khác. Khi thu hồi câu cuối cùng, tài khoản mất quyền truy cập và hồ sơ tùy chọn được xóa.
 - Nút tải JSON của lượt thật xuất các câu đã xác nhận. Khi câu trả lời thay đổi, web dùng đoạn nguồn được chọn để tạo trích dẫn và bỏ bản đồ mệnh đề cũ. Tệp xuất ghi mã người duyệt. Họ tên, nơi công tác, vai trò và ghi chú do người duyệt nhập được lưu riêng trong trang duyệt.

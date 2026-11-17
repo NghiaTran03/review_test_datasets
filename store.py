@@ -128,16 +128,19 @@ def import_dataset(location, path):
     return len(records)
 
 
-def issue_link(db, reviewer_id, referral_id=None):
-    token = secrets.token_urlsafe(32)
+def issue_link(db, reviewer_id, referral_id=None, *, token=None):
+    token = token or secrets.token_urlsafe(32)
     db.execute(
         "UPDATE invitations SET consumed_at = ? WHERE reviewer_id = ? AND consumed_at IS NULL",
         (timestamp(), reviewer_id),
     )
-    db.execute(
-        "INSERT INTO invitations (token_hash, reviewer_id, referral_id, expires_at) VALUES (?, ?, ?, ?)",
+    inserted = db.execute(
+        "INSERT INTO invitations (token_hash, reviewer_id, referral_id, expires_at) VALUES (?, ?, ?, ?) "
+        "ON CONFLICT (token_hash) DO NOTHING",
         (digest(token), reviewer_id, referral_id, timestamp(datetime.now(UTC) + timedelta(days=7))),
-    )
+    ).rowcount
+    if inserted != 1:
+        raise ReviewError("Hãy thử tạo lại lời mời.")
     return token
 
 
@@ -166,7 +169,7 @@ def release_unstarted(db, reviewer_id):
     return changed
 
 
-def invite(db, scope, count, can_refer, referral_id):
+def invite(db, scope, count, can_refer, referral_id, *, token=None):
     if scope not in SCOPES or not 1 <= count <= 460:
         raise ReviewError("Chọn lượt duyệt và số câu từ 1 đến 460.")
     db.locked("SELECT source_hash FROM dataset WHERE id = 1")
@@ -194,7 +197,7 @@ def invite(db, scope, count, can_refer, referral_id):
             "UPDATE review_items SET reviewer_id = ? WHERE scope = ? AND question_id = ?",
             (reviewer_id, scope, row["question_id"]),
         )
-    return issue_link(db, reviewer_id, referral_id)
+    return issue_link(db, reviewer_id, referral_id, token=token)
 
 
 def accept_invite(db, token):
